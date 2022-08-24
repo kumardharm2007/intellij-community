@@ -1,6 +1,7 @@
 // Copyright 2000-2022 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 package org.jetbrains.kotlin.idea.codeinsight.utils
 
+import com.intellij.psi.tree.IElementType
 import org.jetbrains.kotlin.KtNodeTypes
 import org.jetbrains.kotlin.idea.base.psi.deleteBody
 import org.jetbrains.kotlin.idea.references.mainReference
@@ -97,5 +98,81 @@ fun removeRedundantSetter(setter: KtPropertyAccessor) {
         setter.delete()
     } else {
         setter.deleteBody()
+    }
+}
+
+fun KtExpression.negate(reformat: Boolean = true, isBooleanPrefixExpression: (KtExpression) -> Boolean): KtExpression {
+    val specialNegation = specialNegation(reformat, isBooleanPrefixExpression)
+    if (specialNegation != null) return specialNegation
+    return KtPsiFactory(this).createExpressionByPattern("!$0", this, reformat = reformat)
+}
+
+private fun KtExpression.specialNegation(reformat: Boolean, isBooleanPrefixExpression: (KtExpression) -> Boolean): KtExpression? {
+    val factory = KtPsiFactory(this)
+    when (this) {
+        is KtPrefixExpression -> {
+            if (operationReference.getReferencedName() == "!") {
+                val baseExpression = baseExpression
+                if (baseExpression != null) {
+                    if (isBooleanPrefixExpression(this)) {
+                        return KtPsiUtil.safeDeparenthesize(baseExpression)
+                    }
+                }
+            }
+        }
+
+        is KtBinaryExpression -> {
+            val operator = operationToken
+            if (operator !in NEGATABLE_OPERATORS) return null
+            val left = left ?: return null
+            val right = right ?: return null
+            return factory.createExpressionByPattern(
+                "$0 $1 $2", left, getNegatedOperatorText(operator), right,
+                reformat = reformat
+            )
+        }
+
+        is KtIsExpression -> {
+            return factory.createExpressionByPattern(
+                "$0 $1 $2",
+                leftHandSide,
+                if (isNegated) "is" else "!is",
+                typeReference ?: return null,
+                reformat = reformat
+            )
+        }
+
+        is KtConstantExpression -> {
+            return when (text) {
+                "true" -> factory.createExpression("false")
+                "false" -> factory.createExpression("true")
+                else -> null
+            }
+        }
+    }
+    return null
+}
+
+private val NEGATABLE_OPERATORS = setOf(
+    KtTokens.EQEQ, KtTokens.EXCLEQ, KtTokens.EQEQEQ,
+    KtTokens.EXCLEQEQEQ, KtTokens.IS_KEYWORD, KtTokens.NOT_IS, KtTokens.IN_KEYWORD,
+    KtTokens.NOT_IN, KtTokens.LT, KtTokens.LTEQ, KtTokens.GT, KtTokens.GTEQ
+)
+
+private fun getNegatedOperatorText(token: IElementType): String {
+    return when (token) {
+        KtTokens.EQEQ -> KtTokens.EXCLEQ.value
+        KtTokens.EXCLEQ -> KtTokens.EQEQ.value
+        KtTokens.EQEQEQ -> KtTokens.EXCLEQEQEQ.value
+        KtTokens.EXCLEQEQEQ -> KtTokens.EQEQEQ.value
+        KtTokens.IS_KEYWORD -> KtTokens.NOT_IS.value
+        KtTokens.NOT_IS -> KtTokens.IS_KEYWORD.value
+        KtTokens.IN_KEYWORD -> KtTokens.NOT_IN.value
+        KtTokens.NOT_IN -> KtTokens.IN_KEYWORD.value
+        KtTokens.LT -> KtTokens.GTEQ.value
+        KtTokens.LTEQ -> KtTokens.GT.value
+        KtTokens.GT -> KtTokens.LTEQ.value
+        KtTokens.GTEQ -> KtTokens.LT.value
+        else -> throw IllegalArgumentException("The token $token does not have a negated equivalent.")
     }
 }
